@@ -18,6 +18,25 @@ Requirements:
 """
 
 # ============================================================================
+# REFERENCES / ATTRIBUTION
+# ============================================================================
+# The eShotgun method implemented in this file is the epsilon-Shotgun
+# (e-shotgun) acquisition function of De Ath et al. (2020). The implementation
+# here follows their formulation; please cite the original work when using it:
+#
+#   @inproceedings{de2020e,
+#     title     = {$\epsilon$-shotgun: $\epsilon$-greedy Batch Bayesian Optimisation},
+#     author    = {De Ath, George and Everson, Richard M. and
+#                  Fieldsend, Jonathan E. and Rahat, Alma A. M.},
+#     booktitle = {Proceedings of the Genetic and Evolutionary Computation Conference},
+#     pages     = {787--795},
+#     year      = {2020},
+#     publisher = {ACM}
+#   }
+# ============================================================================
+
+
+# ============================================================================
 # IMPORTS
 # ============================================================================
 import math
@@ -436,7 +455,12 @@ def _CSAW_selection(X, mu, sigma, eps_dbscan=0.05, k_batch=4):
 
 def eShotgun(model, f_lb, f_ub, feval_budget, q, cf,
              epsilon=0.1, pf=True, pf_method='sobol', **kwargs):
-    """eShotgun: epsilon-greedy + Gaussian shotgun batch."""
+    """eShotgun: epsilon-greedy + Gaussian shotgun batch.
+
+    The epsilon-Shotgun acquisition of De Ath et al. (2020). The implementation
+    follows their formulation; please cite the original paper when using this
+    method (see the REFERENCES / ATTRIBUTION block at the top of this file).
+    """
     n_dim = f_lb.size
     if np.random.uniform() < epsilon:
         if pf:
