@@ -44,12 +44,45 @@ import warnings
 import numpy as np
 import scipy
 import scipy.optimize
-import cma
+
+# Optional dependencies.  The full experiments can use the original packages,
+# while the fallbacks below allow a light demo/sanity check to run even when
+# cma, pymoo, or pyDOE2 are not installed.
+try:
+    import cma
+except Exception:  # pragma: no cover - fallback used only when cma is unavailable
+    cma = None
+
 from sklearn.cluster import DBSCAN, KMeans
 from sklearn.preprocessing import MinMaxScaler
-from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+
+try:
+    from pymoo.util.nds.non_dominated_sorting import NonDominatedSorting
+except Exception:  # pragma: no cover - simple 2D/general minimisation fallback
+    class NonDominatedSorting:
+        def do(self, F, only_non_dominated_front=True):
+            F = np.asarray(F, dtype=float)
+            n = F.shape[0]
+            is_nd = np.ones(n, dtype=bool)
+            for i in range(n):
+                if not is_nd[i]:
+                    continue
+                dominated_by_j = np.all(F <= F[i], axis=1) & np.any(F < F[i], axis=1)
+                if np.any(dominated_by_j):
+                    is_nd[i] = False
+            return np.where(is_nd)[0]
+
 from scipy.stats import qmc
-from pyDOE2.doe_lhs import lhs
+
+try:
+    from pyDOE2.doe_lhs import lhs
+except Exception:  # pragma: no cover - simple LHD fallback
+    def lhs(n, samples, criterion=None):
+        H = np.zeros((samples, n))
+        for j in range(n):
+            perm = np.random.permutation(samples)
+            H[:, j] = (perm + np.random.rand(samples)) / samples
+        return H
 
 
 # ============================================================================
@@ -208,6 +241,17 @@ def _aquisition_LBFGSB(model, aq_func, cf=None, aq_kwargs={}):
 
 
 def _minimise_CMAES(f, lb, ub, maxeval=5000, cf=None, ftol_abs=1e-15):
+    # Fallback for demo environments without the cma package.  This branch is
+    # not intended to replace CMA-ES in the full paper experiments.
+    if cma is None:
+        bounds = list(zip(lb, ub))
+        maxiter = max(1, int(maxeval // max(10, 5 * lb.size)))
+        res = scipy.optimize.differential_evolution(
+            lambda x: float(np.squeeze(f(np.asarray(x)))),
+            bounds=bounds, maxiter=maxiter, polish=True, disp=False
+        )
+        return np.asarray(res.x, dtype=float)
+
     cma_options = {'bounds': [list(lb), list(ub)], 'tolfun': ftol_abs,
                    'maxfevals': maxeval, 'verb_disp': 0, 'verb_log': 0,
                    'verbose': -1, 'CMA_stds': np.abs(ub - lb)}
@@ -296,12 +340,12 @@ def _estimate_L(model, xj, lengthscale, lb, ub):
     return L if L >= 1e-7 else 10
 
 
-def _ball_radius(xj, model, lb, ub):
+def _ball_radius(xj, model, lb, ub, gamma=1.0):
     ls = model.kern.lengthscale[0]
     L  = _estimate_L(model, xj, ls, lb, ub)
     M  = np.min(model.Y)
     mu_xj, sig2_xj = model.predict(np.atleast_2d(xj))
-    rj = (np.abs(mu_xj - M) + np.sqrt(sig2_xj)) / L
+    rj = (np.abs(mu_xj - M) + gamma * np.sqrt(sig2_xj)) / L
     return np.squeeze(rj)
 
 
@@ -318,24 +362,25 @@ def _hv_contributions(points, ref):
 
 
 def _compute_entropy_weights(G: np.ndarray):
-    m, n = G.shape; G = G + 1e-12
+    m, n = G.shape
+    if m <= 1:
+        return np.ones(n) / n
+    G = G + 1e-12
     G_sum = G.sum(axis=0)
     pij   = G / np.where(G_sum == 0, 1e-18, G_sum)
     k_val = 1 / np.log(m)
     E_term = np.where(pij > 0, pij * np.log(pij), 0.0)
     E = -k_val * E_term.sum(axis=0)
     d = 1 - E
-    return d / d.sum()
+    d_sum = d.sum()
+    if d_sum <= 1e-18 or not np.isfinite(d_sum):
+        return np.ones(n) / n
+    return d / d_sum
 
 
-def _exploit_batch(X, mu, k_batch=4):
-    k = min(k_batch, X.shape[0])
-    idx = np.argsort(mu.ravel())[:k]
-    if len(idx) < k_batch:
-        best = X[idx[0]] if len(idx) > 0 else X[np.argmin(mu.ravel())]
-        filler = np.tile(best, (k_batch - len(idx), 1))
-        return np.vstack([X[idx], filler])
-    return X[idx]
+
+# The old Pareto-candidate exploit shortcut was removed because Algorithm 6
+# requires the exploitative Shotgun branch instead.
 
 
 def _get_pf_candidates(model, f_lb, f_ub, feval_budget, cf, pf_method='sobol'):
@@ -349,7 +394,7 @@ def _get_pf_candidates(model, f_lb, f_ub, feval_budget, cf, pf_method='sobol'):
     return X_front, musigma[:, 0].reshape(-1,1), musigma[:, 1].reshape(-1,1)
 
 
-def _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf=None):
+def _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf=None, gamma=1.0):
     """Exploitative Shotgun branch used by Algorithm 6.
 
     First select an anchor point xj by minimizing the GP predictive mean mu(x).
@@ -370,7 +415,7 @@ def _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf=None):
         xj    = _minimise_CMAES(f_acq, f_lb, f_ub, feval_budget, cf)
 
     xj = np.asarray(xj, dtype=float).reshape(-1)
-    rj = _ball_radius(xj, model, f_lb, f_ub)
+    rj = _ball_radius(xj, model, f_lb, f_ub, gamma=gamma)
     rj = np.minimum(rj, np.linalg.norm(f_ub - f_lb) / 2)
 
     Xnew = [xj]
@@ -401,7 +446,7 @@ def _ClusterHC_selection(X, mu, sigma, eps_dbscan=0.05, k_batch=4):
         return X
     fb_idx = np.argsort(mu.ravel())[:q]
     fb     = X[fb_idx]                              # fallback: lowest predicted mean
-    pred_obj = np.vstack([mu, sigma]).T
+    pred_obj = np.column_stack([mu.ravel(), sigma.ravel()])
     if np.any(np.max(pred_obj, 0) - np.min(pred_obj, 0) < 1e-9):
         return fb
     try:
@@ -410,7 +455,10 @@ def _ClusterHC_selection(X, mu, sigma, eps_dbscan=0.05, k_batch=4):
         cluster_ids = sorted(set(labels) - {-1})
         J = len(cluster_ids)
 
-        hv_pts = np.vstack([mu, -sigma]).T
+        # Hypervolume contribution is computed in the normalized minimization
+        # objective space (mu, -sigma), matching the manuscript description.
+        hv_pts_raw = np.column_stack([mu.ravel(), -sigma.ravel()])
+        hv_pts = MinMaxScaler().fit_transform(hv_pts_raw)
         ref    = np.max(hv_pts, axis=0) + 1e-6
 
         # k-means fallback when DBSCAN finds more clusters than the batch size
@@ -451,7 +499,7 @@ def _CSAW_selection(X, mu, sigma, eps_dbscan=0.05, k_batch=4):
     k    = min(k_batch, X.shape[0])
     fb_idx = np.argsort(mu.ravel())[:k]; fb = X[fb_idx]
     if X.shape[0] == 0: return fb
-    pred_obj = np.vstack([mu, sigma]).T
+    pred_obj = np.column_stack([mu.ravel(), sigma.ravel()])
     if np.any(np.max(pred_obj,0) - np.min(pred_obj,0) < 1e-9): return fb
     try:
         # Step 1-3: entropy weights + SAW score
@@ -490,7 +538,7 @@ def _CSAW_selection(X, mu, sigma, eps_dbscan=0.05, k_batch=4):
 # ============================================================================
 
 def eShotgun(model, f_lb, f_ub, feval_budget, q, cf,
-             epsilon=0.1, pf=True, pf_method='sobol', **kwargs):
+             epsilon=0.1, pf=True, pf_method='sobol', gamma=1.0, **kwargs):
     """eShotgun: epsilon-greedy anchor + Gaussian shotgun batch.
 
     The epsilon-Shotgun acquisition of De Ath et al. (2020). With probability
@@ -508,7 +556,7 @@ def eShotgun(model, f_lb, f_ub, feval_budget, q, cf,
             xj = np.random.uniform(f_lb, f_ub)
 
         xj = np.asarray(xj, dtype=float).reshape(-1)
-        rj = _ball_radius(xj, model, f_lb, f_ub)
+        rj = _ball_radius(xj, model, f_lb, f_ub, gamma=gamma)
         rj = np.minimum(rj, np.linalg.norm(f_ub - f_lb) / 2)
         Xnew = [xj]
         while len(Xnew) < q:
@@ -520,11 +568,11 @@ def eShotgun(model, f_lb, f_ub, feval_budget, q, cf,
             Xnew.append(Xt)
         return np.array(Xnew)
 
-    return _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf)
+    return _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf, gamma=gamma)
 
 
 def eClusterHC_Batch(model, f_lb, f_ub, feval_budget, q, cf,
-                     epsilon=0.1, pf=True, pf_method='sobol', **kwargs):
+                     epsilon=0.1, pf=True, pf_method='sobol', gamma=1.0, **kwargs):
     """eClusterHC following Algorithm 6.
 
     With probability epsilon, select the whole batch using ClusterHC on the
@@ -542,11 +590,11 @@ def eClusterHC_Batch(model, f_lb, f_ub, feval_budget, q, cf,
             Xnew = np.vstack([Xnew, np.tile(fp, (q-Xnew.shape[0], 1))])[:q]
         return Xnew
 
-    return _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf)
+    return _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf, gamma=gamma)
 
 
 def eCSAW_Batch(model, f_lb, f_ub, feval_budget, q, cf,
-                epsilon=0.1, pf=True, pf_method='sobol', **kwargs):
+                epsilon=0.1, pf=True, pf_method='sobol', gamma=1.0, **kwargs):
     """eCSAW following Algorithm 6.
 
     With probability epsilon, select the whole batch using CSAW on the
@@ -564,7 +612,7 @@ def eCSAW_Batch(model, f_lb, f_ub, feval_budget, q, cf,
             Xnew = np.vstack([Xnew, np.tile(fp, (q-Xnew.shape[0], 1))])[:q]
         return Xnew
 
-    return _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf)
+    return _shotgun_exploit_batch(model, f_lb, f_ub, feval_budget, q, cf, gamma=gamma)
 
 
 def ClusterHC_PF_Batch(model, f_lb, f_ub, feval_budget, q, cf,
