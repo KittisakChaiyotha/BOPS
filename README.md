@@ -2,7 +2,7 @@
 
 Supplementary code repository for peer-review reproducibility verification:
 
-> **"Pareto-Based Selection Strategies for Bayesian Optimization of Expensive Black-Box Functions"**
+> **"Pareto-Based Selection Strategies for Batch Bayesian Optimization of Expensive Black-Box Functions"**
 
 This self-contained repository provides a functional demonstration of the complete optimization pipeline proposed in the paper. It executes all **5 batch selection methods** across independent trials on standard benchmark functions to facilitate rapid verification by reviewers without requiring any project-specific data paths or heavy infrastructure. The settings are intentionally small and are meant as a reproducibility/demo run, not as a replacement for the full experimental study in the paper.
 
