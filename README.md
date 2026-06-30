@@ -1,4 +1,4 @@
-# BOPS-demo — Batch Bayesian Optimisation with Pareto-Based Selection
+# BOPS — Batch Bayesian Optimisation with Pareto-Based Selection
 
 Supplementary code repository for peer-review reproducibility verification:
 
@@ -12,7 +12,7 @@ This self-contained repository provides a functional demonstration of the comple
 ## Folder Structure
 
 ```
-BOPS-demo/
+BOPS/
 ├── methods.py          # All 5 method definitions (self-contained)
 ├── run_demo.py         # Optimisation pipeline + demo runner
 └── README.md           # This file
@@ -21,7 +21,7 @@ BOPS-demo/
 After running the demo, the following folders are created automatically:
 
 ```
-BOPS-demo/
+BOPS/
 ├── demo_training_data/ # LHD initial designs (auto-generated)
 ├── demo_results/       # .npz result files (one per run)
 └── demo_summary.txt    # Plain-text results table
@@ -54,7 +54,7 @@ pip install numpy scipy GPy scikit-learn pymoo cma pyDOE2
 **Step 1** — Download or copy the two files into a folder:
 
 ```
-BOPS-demo/
+BOPS/
 ├── methods.py
 └── run_demo.py
 ```
@@ -124,7 +124,7 @@ The terminal will print a results table like:
   Branin         eShotgun                0.4791   0.5409   0.4173
   ...
 
-  Total time : ~ 15s
+  Total time : ~ 20s
   Results in : demo_results/
   Summary    : demo_summary.txt
 =================================================================
